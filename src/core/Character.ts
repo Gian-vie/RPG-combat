@@ -1,0 +1,24 @@
+import type { ILoadoutFactory } from '../patterns/abstract-factory/ILoadoutFactory';
+import { BaseStats } from '../patterns/decorator/BaseStats';
+import type { ICombatStats } from '../patterns/decorator/ICombatStats';
+import type { IObserver, ISubject } from '../patterns/observer/IObserver';
+import { NormalState } from '../patterns/state/NormalState';
+import type { CombatState } from '../patterns/state/CombatState';
+import { CombatEventType, type ImmutableEvent, type TurnOwner } from '../types/combat.types';
+
+export interface CharacterSnapshot { readonly name: string; readonly maxHp: number; readonly hp: number; readonly state: CombatState; readonly stats: ICombatStats; readonly factory: ILoadoutFactory; }
+export class Character implements ISubject<ImmutableEvent> {
+  private characterName: string; private maxHpValue: number; private hpValue: number; private currentState: CombatState; private currentStats: ICombatStats; private currentFactory: ILoadoutFactory; private readonly observers = new Set<IObserver<ImmutableEvent>>();
+  constructor(public readonly id: TurnOwner, name: string, factory: ILoadoutFactory) { this.characterName = name.trim() || 'Combatente'; this.currentFactory = factory; this.maxHpValue = factory.recommendedMaxHp; this.hpValue = this.maxHpValue; this.currentState = new NormalState(); this.currentStats = new BaseStats(factory); }
+  public get name() { return this.characterName; } public get maxHp() { return this.maxHpValue; } public get hp() { return this.hpValue; } public get state() { return this.currentState; } public get stats() { return this.currentStats; } public get factory() { return this.currentFactory; }
+  public configureCharacter(name: string, factory: ILoadoutFactory): void { this.characterName = name.trim().slice(0, 32) || 'Combatente'; this.currentFactory = factory; this.maxHpValue = factory.recommendedMaxHp; this.hpValue = this.maxHpValue; this.currentState = new NormalState(); this.currentStats = new BaseStats(factory); this.emit(CombatEventType.LOADOUT_CHANGED, 'Abstract Factory', factory.factoryName, this.characterName, `[${factory.professionTitle}] equipado com ${this.currentStats.getWeapon().name}`, this.hpValue); }
+  public applyStatsDecorator(builder: (stats: ICombatStats) => ICombatStats, decoratorName: string): void { this.currentStats = builder(this.currentStats); this.emit(CombatEventType.BUFF_APPLIED, 'Decorator', this.characterName, this.characterName, `Aplicou [${decoratorName}] -> ${this.currentStats.getFormulaChain()}`, this.hpValue); }
+  public changeState(state: CombatState, sourceName = this.characterName): void { this.currentState = state; this.emit(CombatEventType.STATE_CHANGED, 'State', sourceName, this.characterName, `Transição de Estado para [${state.name}] — ${state.ruleDescription}`, this.hpValue); }
+  public processTurnEndLifecycle(): void { this.currentState.onTurnEnd(this); }
+  public receiveDamage(rawAttack: number, attackerName: string): number { const defense = this.currentStats.getDefense(); const mitigated = Math.max(1, rawAttack - defense); const finalDamage = Math.max(0, this.currentState.modifyIncomingDamage(mitigated)); this.hpValue = Math.max(0, Math.min(this.maxHpValue, this.hpValue - finalDamage)); this.emit(CombatEventType.DAMAGE_TAKEN, 'Observer', attackerName, this.characterName, `Sofreu ${finalDamage} de dano!`, this.hpValue, finalDamage); return finalDamage; }
+  public createSnapshot(): Readonly<CharacterSnapshot> { return Object.freeze({ name: this.characterName, maxHp: this.maxHpValue, hp: this.hpValue, state: this.currentState.clone(), stats: this.currentStats, factory: this.currentFactory }); }
+  public restoreSnapshot(snapshot: Readonly<CharacterSnapshot>, actionLabel: string): void { this.characterName = snapshot.name; this.maxHpValue = snapshot.maxHp; this.hpValue = Math.min(this.maxHpValue, Math.max(0, snapshot.hp)); this.currentState = snapshot.state.clone(); this.currentStats = snapshot.stats; this.currentFactory = snapshot.factory; this.emit(CombatEventType.UNDO_EXECUTED, 'Command', 'BattleArena.undo()', this.characterName, `Rollback [${actionLabel}]`, this.hpValue); }
+  public attach(observer: IObserver<ImmutableEvent>): void { this.observers.add(observer); } public detach(observer: IObserver<ImmutableEvent>): void { this.observers.delete(observer); }
+  public notify(event: ImmutableEvent): void { const frozen = Object.freeze({ ...event }); for (const observer of this.observers) observer.update(frozen); }
+  private emit(type: CombatEventType, patternTag: ImmutableEvent['patternTag'], sourceName: string, targetName: string, details: string, currentHp: number, damageDealt?: number): void { this.notify({ id: crypto.randomUUID(), timestamp: new Date().toLocaleTimeString(), type, patternTag, sourceName, targetName, details, currentHp, ...(damageDealt === undefined ? {} : { damageDealt }) }); }
+}
